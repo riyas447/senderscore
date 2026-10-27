@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, render_template_string
+import requests
 import dns.resolver
 import dns.reversename
 import re
@@ -7,22 +8,22 @@ app = Flask(__name__)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="ta">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bulk SenderScore Checker</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-900 text-white min-h-screen p-6">
+<body class="bg-slate-900 text-white min-h-screen p-6 font-sans">
     <div class="max-w-5xl mx-auto">
         <header class="mb-8 text-center">
             <h1 class="text-3xl font-extrabold text-blue-400">Bulk SenderScore & Reputation Auditor</h1>
-            <p class="text-slate-400 mt-2">Enter multiple IP addresses to check live SenderScore and hostnames</p>
+            <p class="text-slate-400 mt-2">Check live SenderScore, Hostnames, and Deliverability Metrics</p>
         </header>
 
         <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg mb-8">
-            <label class="block text-sm font-semibold mb-2 text-slate-300">Enter IP Addresses (One per line or comma separated):</label>
+            <label class="block text-sm font-semibold mb-2 text-slate-300">Enter IP Addresses (One per line):</label>
             <textarea id="ipInput" rows="5" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 font-mono text-white" placeholder="8.219.25.82&#10;209.85.220.41&#10;40.107.76.106"></textarea>
             
             <div class="mt-4 flex gap-4">
@@ -31,7 +32,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <div id="loader" class="hidden text-center py-6 text-blue-400 font-medium">Checking scores via DNSBL... Please wait.</div>
+        <div id="loader" class="hidden text-center py-6 text-blue-400 font-medium">Fetching live SenderScore data... Please wait.</div>
 
         <div id="resultTableContainer" class="hidden bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
             <table class="w-full text-left text-sm">
@@ -80,14 +81,15 @@ HTML_TEMPLATE = """
                     data.results.forEach(item => {
                         let badgeColor = 'bg-slate-700 text-slate-300';
                         if (item.rating === 'GOOD') badgeColor = 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
-                        if (item.rating === 'POOR') badgeColor = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                        else if (item.rating === 'FAIR') badgeColor = 'bg-blue-500/20 text-blue-400 border border-blue-500/30';
+                        else if (item.rating === 'POOR') badgeColor = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
 
                         const tr = document.createElement('tr');
                         tr.className = "hover:bg-slate-750";
                         tr.innerHTML = (
                             '<td class="p-4 font-bold text-slate-200">' + item.ip + '</td>' +
-                            '<td class="p-4 text-xl font-extrabold ' + (item.score >= 80 ? 'text-amber-400' : 'text-slate-300') + '">' + item.score + '</td>' +
-                            '<td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold ' + badgeColor + '">' + item.rating + '</span></td>' +
+                            '<td class="p-4 text-2xl font-black ' + (item.score >= 80 ? 'text-amber-400' : 'text-slate-300') + '">' + item.score + '</td>' +
+                            '<td class="p-4"><span class="px-2.5 py-1 rounded text-xs font-bold ' + badgeColor + '">' + item.rating + '</span></td>' +
                             '<td class="p-4 text-xs text-slate-400 break-all">' + item.hostname + '</td>' +
                             '<td class="p-4 text-xs font-bold text-slate-300">' + item.volume + '</td>'
                         );
@@ -121,69 +123,67 @@ def get_ip_reputation(ip):
         "status": "Failed"
     }
 
-    # 1. Reverse PTR Hostname lookup
+    # 1. Reverse PTR Hostname
     try:
         rev_name = dns.reversename.from_address(ip)
         res_ptr = dns.resolver.Resolver()
-        res_ptr.timeout = 2.5
-        res_ptr.lifetime = 2.5
+        res_ptr.timeout = 2.0
+        res_ptr.lifetime = 2.0
         ptr_answers = res_ptr.resolve(rev_name, "PTR")
         result["hostname"] = str(ptr_answers[0]).rstrip('.')
     except Exception:
         result["hostname"] = "No PTR Record"
 
-    # 2. Validity Direct Authoritative Nameservers Query
+    # 2. HTTPS-over-DNS (DoH) & Validity Endpoint Check (Bypasses Port 53 blocks)
     try:
         octets = ip.split('.')
-        if len(octets) == 4:
-            lookup_host = f"{octets[3]}.{octets[2]}.{octets[1]}.{octets[0]}.score.senderscore.com"
-            
-            # Validity-oda direct root authoritative server IPs
-            authoritative_ips = ['204.232.247.108', '64.98.36.108', '204.232.247.109', '64.98.36.109']
-            
-            score_found = False
-            for auth_ip in authoritative_ips:
-                try:
-                    score_resolver = dns.resolver.Resolver(configure=False)
-                    score_resolver.nameservers = [auth_ip]
-                    score_resolver.timeout = 2.0
-                    score_resolver.lifetime = 2.0
-                    
-                    answers = score_resolver.resolve(lookup_host, "A")
-                    for rdata in answers:
-                        resp = str(rdata)
-                        if resp.startswith("127.0.4."):
-                            score = int(resp.split('.')[-1])
-                            result["score"] = score
-                            result["status"] = "Success"
-                            if score >= 80:
-                                result["rating"] = "GOOD"
-                                result["volume"] = "HIGH"
-                            elif score >= 70:
-                                result["rating"] = "FAIR"
-                                result["volume"] = "MEDIUM"
-                            else:
-                                result["rating"] = "POOR"
-                                result["volume"] = "LOW"
-                            score_found = True
-                            break
-                        elif resp == "127.255.255.255":
-                            result["score"] = "Blocked"
-                            result["status"] = "Rate Limited"
-                    if score_found:
-                        break
-                except dns.resolver.NXDOMAIN:
-                    result["score"] = 0
-                    result["rating"] = "Low Volume"
-                    result["volume"] = "LOW"
-                    result["status"] = "No SenderScore History"
-                    score_found = True
-                    break
-                except Exception:
-                    continue
+        lookup_host = f"{octets[3]}.{octets[2]}.{octets[1]}.{octets[0]}.score.senderscore.com"
+        
+        # Google/Cloudflare DoH fallback via HTTPS
+        doh_url = f"https://dns.google/resolve?name={lookup_host}&type=A"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        r = requests.get(doh_url, headers=headers, timeout=3.5)
+        
+        if r.status_code == 200:
+            res_data = r.json()
+            # Status 0 = NOERROR, 3 = NXDOMAIN
+            if res_data.get("Status") == 3:
+                result["score"] = 0
+                result["rating"] = "Not Rated"
+                result["volume"] = "LOW"
+                result["status"] = "No SenderScore History"
+            elif "Answer" in res_data:
+                for ans in res_data["Answer"]:
+                    data_val = ans.get("data", "")
+                    if data_val.startswith("127.0.4."):
+                        score = int(data_val.split('.')[-1])
+                        result["score"] = score
+                        result["status"] = "Success"
+                        if score >= 80:
+                            result["rating"] = "GOOD"
+                            result["volume"] = "HIGH"
+                        elif score >= 70:
+                            result["rating"] = "FAIR"
+                            result["volume"] = "MEDIUM"
+                        else:
+                            result["rating"] = "POOR"
+                            result["volume"] = "LOW"
+                        return result
+
+        # Fallback to direct validity API scrape
+        v_url = f"https://senderscore.org/assess/single-ip/?ip={ip}"
+        v_resp = requests.get(v_url, headers=headers, timeout=4.0)
+        if v_resp.status_code == 200:
+            score_match = re.search(r'class="[^"]*score[^"]*">(\d{1,3})<', v_resp.text, re.IGNORECASE)
+            if score_match:
+                score = int(score_match.group(1))
+                result["score"] = score
+                result["status"] = "Success"
+                result["rating"] = "GOOD" if score >= 80 else ("FAIR" if score >= 70 else "POOR")
+                result["volume"] = "HIGH" if score >= 80 else "MEDIUM"
+                return result
 
     except Exception as e:
-        result["score"] = "Error"
         result["status"] = str(e)
 
     return result
