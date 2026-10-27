@@ -84,13 +84,13 @@ HTML_TEMPLATE = """
 
                         const tr = document.createElement('tr');
                         tr.className = "hover:bg-slate-750";
-                        tr.innerHTML = `
-                            <td class="p-4 font-bold text-slate-200">\${item.ip}</td>
-                            <td class="p-4 text-xl font-extrabold \${item.score >= 80 ? 'text-amber-400' : 'text-slate-300'}">\${item.score}</td>
-                            <td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold \${badgeColor}">\${item.rating}</span></td>
-                            <td class="p-4 text-xs text-slate-400 break-all">\${item.hostname}</td>
-                            <td class="p-4 text-xs font-bold text-slate-300">\${item.volume}</td>
-                        `;
+                        tr.innerHTML = (
+                            '<td class="p-4 font-bold text-slate-200">' + item.ip + '</td>' +
+                            '<td class="p-4 text-xl font-extrabold ' + (item.score >= 80 ? 'text-amber-400' : 'text-slate-300') + '">' + item.score + '</td>' +
+                            '<td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold ' + badgeColor + '">' + item.rating + '</span></td>' +
+                            '<td class="p-4 text-xs text-slate-400 break-all">' + item.hostname + '</td>' +
+                            '<td class="p-4 text-xs font-bold text-slate-300">' + item.volume + '</td>'
+                        );
                         tbody.appendChild(tr);
                     });
                     tableContainer.classList.remove('hidden');
