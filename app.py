@@ -121,7 +121,7 @@ def get_ip_reputation(ip):
         "status": "Failed"
     }
 
-    # 1. Reverse PTR Hostname lookup (System resolver)
+    # 1. Reverse PTR Hostname lookup
     try:
         rev_name = dns.reversename.from_address(ip)
         res_ptr = dns.resolver.Resolver()
@@ -132,46 +132,58 @@ def get_ip_reputation(ip):
     except Exception:
         result["hostname"] = "No PTR Record"
 
-    # 2. Validity SenderScore Direct Lookup
+    # 2. Validity Direct Authoritative Nameservers Query
     try:
         octets = ip.split('.')
         if len(octets) == 4:
             lookup_host = f"{octets[3]}.{octets[2]}.{octets[1]}.{octets[0]}.score.senderscore.com"
             
-            # Validity direct nameservers moolam query seigirom
-            score_resolver = dns.resolver.Resolver(configure=False)
-            # Level3 / OpenDNS / Public resolvers fallback
-            score_resolver.nameservers = ['208.67.222.222', '4.2.2.2', '208.67.220.220']
-            score_resolver.timeout = 3.0
-            score_resolver.lifetime = 3.0
+            # Validity-oda direct root authoritative server IPs
+            authoritative_ips = ['204.232.247.108', '64.98.36.108', '204.232.247.109', '64.98.36.109']
             
-            answers = score_resolver.resolve(lookup_host, "A")
-            for rdata in answers:
-                resp = str(rdata)
-                if resp.startswith("127.0.4."):
-                    score = int(resp.split('.')[-1])
-                    result["score"] = score
-                    result["status"] = "Success"
-                    if score >= 80:
-                        result["rating"] = "GOOD"
-                        result["volume"] = "HIGH"
-                    elif score >= 70:
-                        result["rating"] = "FAIR"
-                        result["volume"] = "MEDIUM"
-                    else:
-                        result["rating"] = "POOR"
-                        result["volume"] = "LOW"
+            score_found = False
+            for auth_ip in authoritative_ips:
+                try:
+                    score_resolver = dns.resolver.Resolver(configure=False)
+                    score_resolver.nameservers = [auth_ip]
+                    score_resolver.timeout = 2.0
+                    score_resolver.lifetime = 2.0
+                    
+                    answers = score_resolver.resolve(lookup_host, "A")
+                    for rdata in answers:
+                        resp = str(rdata)
+                        if resp.startswith("127.0.4."):
+                            score = int(resp.split('.')[-1])
+                            result["score"] = score
+                            result["status"] = "Success"
+                            if score >= 80:
+                                result["rating"] = "GOOD"
+                                result["volume"] = "HIGH"
+                            elif score >= 70:
+                                result["rating"] = "FAIR"
+                                result["volume"] = "MEDIUM"
+                            else:
+                                result["rating"] = "POOR"
+                                result["volume"] = "LOW"
+                            score_found = True
+                            break
+                        elif resp == "127.255.255.255":
+                            result["score"] = "Blocked"
+                            result["status"] = "Rate Limited"
+                    if score_found:
+                        break
+                except dns.resolver.NXDOMAIN:
+                    result["score"] = 0
+                    result["rating"] = "Low Volume"
+                    result["volume"] = "LOW"
+                    result["status"] = "No SenderScore History"
+                    score_found = True
                     break
-                elif resp == "127.255.255.255":
-                    result["score"] = "Blocked"
-                    result["status"] = "Rate Limited by Validity"
-    except dns.resolver.NXDOMAIN:
-        result["score"] = 0
-        result["rating"] = "Low Volume"
-        result["volume"] = "LOW"
-        result["status"] = "No SenderScore History"
+                except Exception:
+                    continue
+
     except Exception as e:
-        result["score"] = "N/A"
+        result["score"] = "Error"
         result["status"] = str(e)
 
     return result
