@@ -121,23 +121,31 @@ def get_ip_reputation(ip):
         "status": "Failed"
     }
 
-    # 1. Reverse PTR Hostname lookup
-    resolver = dns.resolver.Resolver()
-    resolver.timeout = 3.0
-    resolver.lifetime = 3.0
+    # 1. Reverse PTR Hostname lookup (System resolver)
     try:
         rev_name = dns.reversename.from_address(ip)
-        ptr_answers = resolver.resolve(rev_name, "PTR")
+        res_ptr = dns.resolver.Resolver()
+        res_ptr.timeout = 2.5
+        res_ptr.lifetime = 2.5
+        ptr_answers = res_ptr.resolve(rev_name, "PTR")
         result["hostname"] = str(ptr_answers[0]).rstrip('.')
     except Exception:
         result["hostname"] = "No PTR Record"
 
-    # 2. Validity SenderScore DNSBL lookup (127.0.4.X)
+    # 2. Validity SenderScore Direct Lookup
     try:
         octets = ip.split('.')
         if len(octets) == 4:
             lookup_host = f"{octets[3]}.{octets[2]}.{octets[1]}.{octets[0]}.score.senderscore.com"
-            answers = resolver.resolve(lookup_host, "A")
+            
+            # Validity direct nameservers moolam query seigirom
+            score_resolver = dns.resolver.Resolver(configure=False)
+            # Level3 / OpenDNS / Public resolvers fallback
+            score_resolver.nameservers = ['208.67.222.222', '4.2.2.2', '208.67.220.220']
+            score_resolver.timeout = 3.0
+            score_resolver.lifetime = 3.0
+            
+            answers = score_resolver.resolve(lookup_host, "A")
             for rdata in answers:
                 resp = str(rdata)
                 if resp.startswith("127.0.4."):
@@ -154,13 +162,16 @@ def get_ip_reputation(ip):
                         result["rating"] = "POOR"
                         result["volume"] = "LOW"
                     break
+                elif resp == "127.255.255.255":
+                    result["score"] = "Blocked"
+                    result["status"] = "Rate Limited by Validity"
     except dns.resolver.NXDOMAIN:
-        result["score"] = "Low/No Volume"
-        result["rating"] = "Not Rated"
+        result["score"] = 0
+        result["rating"] = "Low Volume"
         result["volume"] = "LOW"
         result["status"] = "No SenderScore History"
     except Exception as e:
-        result["score"] = "Error"
+        result["score"] = "N/A"
         result["status"] = str(e)
 
     return result
